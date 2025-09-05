@@ -1,0 +1,262 @@
+Super — hier ist eine klare, strukturierte Vorgehensweise für Ubuntu, komplett offline-tauglich und mit reinen Kommandozeilen-Schritten. Du brauchst nichts „magisch“ aus Python heraus zu laden; alles Wichtige passiert per Shell (pip/llama.cpp/hf-cli). Am Ende startest du den Agent und gibst deinen Prompt interaktiv ein.
+
+0) Zielbild (kurz)
+
+llama.cpp-Server läuft lokal auf http://127.0.0.1:8080/v1 und lädt ein GGUF-Modell aus deinem Dateisystem.
+
+Dein Agent (agent.py) verbindet sich dorthin (OpenAI-kompatibel), hat Tools für Shell, Dateien, Excel.
+
+Nach der Erstinstallation kannst du das Netz kappen → alles bleibt lokal.
+
+1) Verzeichnis & Pakete (online, einmalig)
+# Basis
+sudo apt update
+sudo apt install -y python3-venv build-essential
+
+# Arbeitsordner
+mkdir -p ~/offline-agent && cd ~/offline-agent
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
+
+# LLM-Server + Agent-Abhängigkeiten (reines CPU-Setup)
+pip install "llama-cpp-python[server]" smolagents pandas openpyxl
+
+# (Optional, nur fürs bequeme Modell-Downloaden)
+pip install -U huggingface_hub
+
+2) Modell (GGUF) lokal ablegen
+
+Variante A – mit huggingface-cli:
+
+mkdir -p ./models/my-model
+# Beispiel – setze <ORG/REPO> und <MODELFILE.gguf> passend zu DEINER Wahl:
+huggingface-cli download <ORG/REPO> <MODELFILE.gguf> \
+  --local-dir ./models/my-model --local-dir-use-symlinks False
+
+
+Variante B – ohne hf-cli (wenn du schon eine .gguf hast):
+
+mkdir -p ./models/my-model
+cp /pfad/zu/deinem/<MODELFILE>.gguf ./models/my-model/
+
+
+Tipp zur Auswahl: Starte mit einer kleinen/effizienten Q4_K_M-Quantisierung (1–3B = sehr flott; 7B = bessere Qualität, immer noch ok auf CPU).
+
+3) Lokalen LLM-Server starten (nur localhost)
+python -m llama_cpp.server \
+  --model ./models/my-model/<MODELFILE>.gguf \
+  --alias local-gguf \
+  --port 8080 \
+  --n_threads $(nproc) \
+  --n_ctx 8192
+
+
+Läuft er? Test (neues Terminal):
+
+curl -s http://127.0.0.1:8080/v1/models | jq
+
+
+Du solltest dein local-gguf sehen.
+
+4) Agent-Code erstellen (interaktiv, Excel-fähig)
+
+Erstelle agent.py in ~/offline-agent:
+
+# agent.py — Interaktiver Offline-Agent (Ubuntu/CPU)
+from smolagents import CodeAgent, OpenAIServerModel, tool
+from subprocess import run
+from typing import Optional, List
+import sys, os, json, io, contextlib
+import pandas as pd
+
+@tool
+def sh(cmd: str) -> str:
+    """Run a shell command.
+    Args:
+        cmd (str): Command line to execute via the system shell.
+    Returns:
+        str: Combined stdout+stderr.
+    """
+    try:
+        r = run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+        return (r.stdout or "") + (r.stderr or "")
+    except Exception as e:
+        return f"error:{e}"
+
+@tool
+def read_file(path: str, max_chars: int = 20000) -> str:
+    """Read a UTF-8 text file (truncated).
+    Args:
+        path (str): File path.
+        max_chars (int): Max chars to return.
+    Returns:
+        str: File content.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = f.read()
+        return data[:max_chars] + ("...[truncated]" if len(data) > max_chars else "")
+    except Exception as e:
+        return f"error:{e}"
+
+@tool
+def write_file(path: str, content: str) -> str:
+    """Write UTF-8 text to a file.
+    Args:
+        path (str): Target file path.
+        content (str): Text to write.
+    Returns:
+        str: Status.
+    """
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"saved:{path}"
+    except Exception as e:
+        return f"error:{e}"
+
+@tool
+def read_excel(path: str, sheet: Optional[str] = None, head: int = 5) -> str:
+    """Load Excel and return structure+preview as JSON.
+    Args:
+        path (str): Excel file path.
+        sheet (str, optional): Sheet name or None.
+        head (int): Preview rows.
+    Returns:
+        str: JSON with rows, columns, dtypes, na_counts, preview_markdown.
+    """
+    try:
+        df = pd.read_excel(path, sheet_name=sheet, engine="openpyxl")
+        info = {
+            "rows": int(len(df)),
+            "columns": list(map(str, df.columns)),
+            "dtypes": {c: str(df[c].dtype) for c in df.columns},
+            "na_counts": {c: int(df[c].isna().sum()) for c in df.columns},
+            "preview_markdown": df.head(head).to_markdown(index=False)
+        }
+        return json.dumps(info, ensure_ascii=False)
+    except Exception as e:
+        return f"error:{e}"
+
+@tool
+def excel_groupby(path: str, sheet: Optional[str], by: List[str], value: str, agg: str = "sum") -> str:
+    """Group Excel by columns and aggregate a value column.
+    Args:
+        path (str): Excel file path.
+        sheet (str, optional): Sheet name or None.
+        by (list[str]): Group-by columns.
+        value (str): Value column.
+        agg (str): Aggregation ('sum','mean','count',...).
+    Returns:
+        str: Markdown table.
+    """
+    try:
+        df = pd.read_excel(path, sheet_name=sheet, engine="openpyxl")
+        g = df.groupby(by)[value].agg(agg).reset_index()
+        return g.to_markdown(index=False)
+    except Exception as e:
+        return f"error:{e}"
+
+@tool
+def to_csv_from_excel(path: str, sheet: Optional[str], out_csv: str) -> str:
+    """Export Excel sheet to CSV.
+    Args:
+        path (str): Excel file path.
+        sheet (str, optional): Sheet name or None.
+        out_csv (str): Output CSV path.
+    Returns:
+        str: Status.
+    """
+    try:
+        df = pd.read_excel(path, sheet_name=sheet, engine="openpyxl")
+        df.to_csv(out_csv, index=False)
+        return f"saved:{out_csv}"
+    except Exception as e:
+        return f"error:{e}"
+
+model = OpenAIServerModel(
+    model_id="local-gguf",                  # muss zu --alias passen
+    api_base="http://127.0.0.1:8080/v1",    # lokaler llama.cpp-Server
+    api_key="sk-local",                     # Dummy, wird nicht geprüft
+    temperature=0.2,
+    max_tokens=1024,
+)
+
+agent = CodeAgent(
+    model=model,
+    tools=[sh, read_file, write_file, read_excel, excel_groupby, to_csv_from_excel],
+    add_base_tools=False
+)
+
+GUIDANCE = (
+    "Use sh to explore the filesystem. "
+    "Use read_file/write_file for text; read_excel/excel_groupby/to_csv_from_excel for spreadsheets."
+)
+
+def main() -> int:
+    print("🔒 Offline-Agent bereit (localhost). 'exit' zum Beenden.")
+    prompt = input("👉 Prompt: ").strip()
+    if not prompt or prompt.lower() in ("exit","quit"):
+        print("Abbruch."); return 0
+    print("\n⏳ Arbeite…\n")
+    out = agent.run(prompt + "\n\n" + GUIDANCE)
+    print("\n✅ Ergebnis:\n")
+    print(out)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+Starten (neues Terminal, im selben Ordner):
+
+source .venv/bin/activate
+python agent.py
+# 👉 Prompt eingeben, z. B.:
+# Lies 'sales.xlsx' (Sheet 'Q2'), zeige NA-Counts und bilde Umsatz je Region (sum).
+
+5) „Wirklich offline“ danach
+
+Wenn Modell & Pakete einmal da sind:
+
+export HF_HUB_OFFLINE=1
+# Netzwerk kappen (optional) – Server & Agent bleiben funktionsfähig.
+
+
+Air-gapped Setup (optional):
+Auf einer Online-Maschine:
+
+# Python-Wheels sammeln
+echo -e "llama-cpp-python[server]\nsmolagents\npandas\nopenpyxl" > requirements.txt
+pip download -r requirements.txt -d wheelhouse
+# .gguf heruntergeladen (siehe Schritt 2)
+# Alles (wheelhouse/, models/, agent.py) per scp/USB zur Offline-VM kopieren
+
+
+Auf der Offline-VM:
+
+python3 -m venv .venv && source .venv/bin/activate
+pip install --no-index --find-links=wheelhouse -r requirements.txt
+# Server+Agent wie oben starten (alles lokal)
+
+6) Ordnerstruktur (Referenz)
+offline-agent/
+├─ .venv/
+├─ models/
+│  └─ my-model/
+│     └─ <MODELFILE>.gguf
+├─ agent.py
+└─ (optional) wheelhouse/  # nur für Air-gap
+
+7) Checks & typische Stolpersteine
+
+Server nicht erreichbar? Port/Firewall prüfen, curl http://127.0.0.1:8080/v1/models.
+
+Langsam? Kleinere GGUF (1–3B) oder niedrigere Quantisierung (Q3_K_M) wählen, --n_threads passend setzen.
+
+Excel-Fehler? pip install -U openpyxl pandas in der venv.
+
+„Command not found“ in sh? Benutze absolute Pfade oder installiere fehlende Tools (z. B. ripgrep).
+
+Wenn du mir kurz sagst, wie stark deine CPU / wie viel RAM vorhanden ist, nenne ich dir 2–3 konkrete GGUF-Dateien (Größe/Qualität) plus den exakten Download-Befehl.
