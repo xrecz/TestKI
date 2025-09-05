@@ -1,12 +1,13 @@
-# agent.py — CPU-only, Windows/Linux
+# agent.py — Interaktiver CPU-Agent (Windows/Linux), komplett lokal
+# Tools: Shell, Files, Excel (lesen/aggregieren/export), kleine Python-Snippets (pandas)
 
 from smolagents import CodeAgent, TransformersModel, tool
 from subprocess import run
-import torch
-import sys, os, json
+from typing import Optional, List
+import sys, os, json, io, contextlib
 import pandas as pd
-import io, contextlib
 
+# ---------- Shell ----------
 @tool
 def sh(cmd: str) -> str:
     """Run a shell command.
@@ -23,6 +24,7 @@ def sh(cmd: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
+# ---------- Dateien ----------
 @tool
 def read_file(path: str, max_chars: int = 20000) -> str:
     """Read a UTF-8 text file and return (optionally truncated) content.
@@ -60,13 +62,14 @@ def write_file(path: str, content: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
+# ---------- Excel / Daten ----------
 @tool
-def read_excel(path: str, sheet: str | None = None, head: int = 5) -> str:
+def read_excel(path: str, sheet: Optional[str] = None, head: int = 5) -> str:
     """Load an Excel sheet and return structure info + preview as JSON.
 
     Args:
         path (str): Excel file path.
-        sheet (str | None): Sheet name or None for first sheet.
+        sheet (str, optional): Sheet name or None for first sheet.
         head (int): Number of preview rows to include.
 
     Returns:
@@ -86,12 +89,12 @@ def read_excel(path: str, sheet: str | None = None, head: int = 5) -> str:
         return f"error:{e}"
 
 @tool
-def excel_groupby(path: str, sheet: str | None, by: list[str], value: str, agg: str = "sum") -> str:
+def excel_groupby(path: str, sheet: Optional[str], by: List[str], value: str, agg: str = "sum") -> str:
     """Group an Excel sheet by columns and aggregate a value column.
 
     Args:
         path (str): Excel file path.
-        sheet (str | None): Sheet name or None for first sheet.
+        sheet (str, optional): Sheet name or None for first sheet.
         by (list[str]): Column names to group by.
         value (str): Value column to aggregate.
         agg (str): Aggregation function (e.g., 'sum', 'mean', 'count').
@@ -107,12 +110,12 @@ def excel_groupby(path: str, sheet: str | None, by: list[str], value: str, agg: 
         return f"error:{e}"
 
 @tool
-def to_csv_from_excel(path: str, sheet: str | None, out_csv: str) -> str:
+def to_csv_from_excel(path: str, sheet: Optional[str], out_csv: str) -> str:
     """Export an Excel sheet to CSV.
 
     Args:
         path (str): Excel file path.
-        sheet (str | None): Sheet name or None for first sheet.
+        sheet (str, optional): Sheet name or None for first sheet.
         out_csv (str): Output CSV path.
 
     Returns:
@@ -125,6 +128,7 @@ def to_csv_from_excel(path: str, sheet: str | None, out_csv: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
+# ---------- Optional: kleine Python-Snippets ----------
 @tool
 def py(code: str) -> str:
     """Execute a short Python snippet with pandas available; return printed output.
@@ -145,11 +149,18 @@ def py(code: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
-# ---- Model (CPU only)
+# ---------- Modell (CPU, offline-freundlich) ----------
 model = TransformersModel(
-    model_id="Qwen/Qwen2.5-Coder-1.5B-Instruct",
-    device_map="cpu",
-    max_new_tokens=1024
+    model_id="Qwen/Qwen2.5-Coder-1.5B-Instruct",      # klein & flott auf CPU
+    max_new_tokens=1024,
+    # Kein device_map => keine Abhängigkeit zu 'accelerate'
+    model_kwargs={
+        "trust_remote_code": True,
+        "torch_dtype": "float32"
+    },
+    tokenizer_kwargs={
+        "trust_remote_code": True
+    }
 )
 
 agent = CodeAgent(
@@ -158,13 +169,25 @@ agent = CodeAgent(
     add_base_tools=False
 )
 
-if len(sys.argv) < 2:
-    print("usage: python agent.py 'your prompt'"); sys.exit(1)
-
-guidance = (
-    "Use sh to explore the FS (Windows: dir / PowerShell via 'powershell -Command'). "
+GUIDANCE = (
+    "Use sh to explore the filesystem (Windows: 'dir', or PowerShell via 'powershell -Command ...'). "
     "Use read_file/write_file for text; read_excel/excel_groupby/to_csv_from_excel for spreadsheets; "
     "use py for short pandas snippets."
 )
 
-print(agent.run(" ".join(sys.argv[1:]) + "\n\n" + guidance))
+def main() -> int:
+    # Interaktiv: Prompt abfragen
+    print("🔧 Lokaler Agent bereit. Tipp 'exit' zum Beenden.")
+    user_prompt = input("👉 Prompt: ").strip()
+    if not user_prompt or user_prompt.lower() in ("exit", "quit"):
+        print("Abbruch.")
+        return 0
+
+    print("\n⏳ Arbeite…\n")
+    result = agent.run(user_prompt + "\n\n" + GUIDANCE)
+    print("\n✅ Ergebnis:\n")
+    print(result)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
