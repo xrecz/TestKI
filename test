@@ -26,25 +26,16 @@ pip install -U huggingface_hub
 
 2) Modell (GGUF) lokal ablegen
 
-Variante A – mit huggingface-cli:
-
-mkdir -p ./models/my-model
-# Beispiel – setze <ORG/REPO> und <MODELFILE.gguf> passend zu DEINER Wahl:
-huggingface-cli download <ORG/REPO> <MODELFILE.gguf> \
-  --local-dir ./models/my-model --local-dir-use-symlinks False
-
-
-Variante B – ohne hf-cli (wenn du schon eine .gguf hast):
-
-mkdir -p ./models/my-model
-cp /pfad/zu/deinem/<MODELFILE>.gguf ./models/my-model/
+mkdir -p ./models/qwen2.5-7b
+huggingface-cli download bartowski/Qwen2.5-7B-Instruct-GGUF \
+  --include "Qwen2.5-7B-Instruct-Q5_K_M.gguf" \
+  --local-dir ./models/qwen2.5-7b --local-dir-use-symlinks False
 
 
 Tipp zur Auswahl: Starte mit einer kleinen/effizienten Q4_K_M-Quantisierung (1–3B = sehr flott; 7B = bessere Qualität, immer noch ok auf CPU).
 
-3) Lokalen LLM-Server starten (nur localhost)
 python -m llama_cpp.server \
-  --model ./models/my-model/<MODELFILE>.gguf \
+  --model ./models/qwen2.5-7b/Qwen2.5-7B-Instruct-Q5_K_M.gguf \
   --alias local-gguf \
   --port 8080 \
   --n_threads $(nproc) \
