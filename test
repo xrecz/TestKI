@@ -1,39 +1,46 @@
-Super — hier ist eine klare, strukturierte Vorgehensweise für Ubuntu, komplett offline-tauglich und mit reinen Kommandozeilen-Schritten. Du brauchst nichts „magisch“ aus Python heraus zu laden; alles Wichtige passiert per Shell (pip/llama.cpp/hf-cli). Am Ende startest du den Agent und gibst deinen Prompt interaktiv ein.
+Perfekt, Darius — hier ist die komplette Schritt-für-Schritt-Anleitung für Ubuntu, mit der du den Agenten komplett offline (nach Erst-Download) betreibst. Alles ist so formuliert, dass du die Befehle direkt in die Shell kopieren kannst. Am Ende steht genau, was du ggf. anpassen musst.
 
-0) Zielbild (kurz)
+1) Zielbild
 
-llama.cpp-Server läuft lokal auf http://127.0.0.1:8080/v1 und lädt ein GGUF-Modell aus deinem Dateisystem.
+Du lädst ein GGUF-Modell (z. B. Qwen2.5-7B-Instruct Q5_K_M) in einen lokalen llama.cpp-Server auf 127.0.0.1:8080.
 
-Dein Agent (agent.py) verbindet sich dorthin (OpenAI-kompatibel), hat Tools für Shell, Dateien, Excel.
+Dein Agent (agent.py) spricht OpenAI-kompatibel mit diesem lokalen Server.
 
-Nach der Erstinstallation kannst du das Netz kappen → alles bleibt lokal.
+Tools: Shell, Datei-I/O, Excel lesen/auswerten/exportieren.
 
-1) Verzeichnis & Pakete (online, einmalig)
-# Basis
+Nach der Einrichtung kannst du die Maschine vom Netz trennen → alles bleibt lokal.
+
+2) Voraussetzungen (einmalig)
 sudo apt update
-sudo apt install -y python3-venv build-essential
-
-# Arbeitsordner
+sudo apt install -y python3-venv build-essential cmake jq
 mkdir -p ~/offline-agent && cd ~/offline-agent
 python3 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-
-# LLM-Server + Agent-Abhängigkeiten (reines CPU-Setup)
+pip install --upgrade pip setuptools wheel
 pip install "llama-cpp-python[server]" smolagents pandas openpyxl
-
-# (Optional, nur fürs bequeme Modell-Downloaden)
+# optional (nur für bequemes Modell-Downloaden):
 pip install -U huggingface_hub
 
-2) Modell (GGUF) lokal ablegen
+
+Tipp: Für Repo-Suchen kannst du später noch sudo apt install -y ripgrep installieren. Nicht nötig, aber praktisch.
+
+3) Modell (GGUF) lokal ablegen
+
+Wir nehmen Qwen2.5-7B-Instruct Q5_K_M (gute Qualität; ~5–6 GB Datei; ~8–10 GB RAM empfehlenswert).
+Wenn du knapperen RAM hast, nimm Q4_K_M statt Q5_K_M.
 
 mkdir -p ./models/qwen2.5-7b
+# Lade genau diese Datei:
 huggingface-cli download bartowski/Qwen2.5-7B-Instruct-GGUF \
   --include "Qwen2.5-7B-Instruct-Q5_K_M.gguf" \
   --local-dir ./models/qwen2.5-7b --local-dir-use-symlinks False
 
 
-Tipp zur Auswahl: Starte mit einer kleinen/effizienten Q4_K_M-Quantisierung (1–3B = sehr flott; 7B = bessere Qualität, immer noch ok auf CPU).
+Alternative ohne hf-cli: Falls du die .gguf schon hast:
 
+mkdir -p ./models/qwen2.5-7b
+cp /pfad/zu/Qwen2.5-7B-Instruct-Q5_K_M.gguf ./models/qwen2.5-7b/
+
+4) Lokalen LLM-Server starten (bleibt auf localhost)
 python -m llama_cpp.server \
   --model ./models/qwen2.5-7b/Qwen2.5-7B-Instruct-Q5_K_M.gguf \
   --alias local-gguf \
@@ -42,16 +49,24 @@ python -m llama_cpp.server \
   --n_ctx 8192
 
 
-Läuft er? Test (neues Terminal):
+Funktionstest (neues Terminal):
 
 curl -s http://127.0.0.1:8080/v1/models | jq
 
 
-Du solltest dein local-gguf sehen.
+Du solltest ein Model mit Name local-gguf sehen.
 
-4) Agent-Code erstellen (interaktiv, Excel-fähig)
+Leistungstipps:
 
-Erstelle agent.py in ~/offline-agent:
+Weniger RAM? --n_ctx 4096.
+
+Noch flotter? Später auf Q4_K_M wechseln.
+
+CPU-Kerne begrenzen? --n_threads 8 (statt $(nproc)).
+
+5) Agent-Datei anlegen
+
+Lege agent.py in ~/offline-agent/ an:
 
 # agent.py — Interaktiver Offline-Agent (Ubuntu/CPU)
 from smolagents import CodeAgent, OpenAIServerModel, tool
@@ -166,9 +181,10 @@ def to_csv_from_excel(path: str, sheet: Optional[str], out_csv: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
+# Lokales LLM: llama.cpp-Server (OpenAI-kompatibel)
 model = OpenAIServerModel(
     model_id="local-gguf",                  # muss zu --alias passen
-    api_base="http://127.0.0.1:8080/v1",    # lokaler llama.cpp-Server
+    api_base="http://127.0.0.1:8080/v1",    # lokaler Server
     api_key="sk-local",                     # Dummy, wird nicht geprüft
     temperature=0.2,
     max_tokens=1024,
@@ -199,55 +215,96 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 
+6) Agent starten
 
-Starten (neues Terminal, im selben Ordner):
+Terminal A: (Server laufen lassen)
 
+python -m llama_cpp.server \
+  --model ./models/qwen2.5-7b/Qwen2.5-7B-Instruct-Q5_K_M.gguf \
+  --alias local-gguf --port 8080 --n_threads $(nproc) --n_ctx 8192
+
+
+Terminal B: (Agent)
+
+cd ~/offline-agent
 source .venv/bin/activate
 python agent.py
-# 👉 Prompt eingeben, z. B.:
+# 👉 Prompt-Beispiele:
 # Lies 'sales.xlsx' (Sheet 'Q2'), zeige NA-Counts und bilde Umsatz je Region (sum).
+# Liste Dateien im aktuellen Ordner und schreibe die Liste in files.txt.
+# Erstelle ein Bash-Skript build.sh, das pytest ausführt, speichere es und führe es aus.
 
-5) „Wirklich offline“ danach
+7) „Wirklich offline“ danach
 
-Wenn Modell & Pakete einmal da sind:
+Wenn alles läuft und die .gguf lokal liegt:
 
 export HF_HUB_OFFLINE=1
-# Netzwerk kappen (optional) – Server & Agent bleiben funktionsfähig.
+# Optional: VM/Server vom Netz trennen – Agent & Server bleiben funktionsfähig.
 
 
-Air-gapped Setup (optional):
-Auf einer Online-Maschine:
+Air-gap (voll offline auf Zielsystem):
 
-# Python-Wheels sammeln
+Auf einer Online-Kiste:
+
 echo -e "llama-cpp-python[server]\nsmolagents\npandas\nopenpyxl" > requirements.txt
 pip download -r requirements.txt -d wheelhouse
-# .gguf heruntergeladen (siehe Schritt 2)
-# Alles (wheelhouse/, models/, agent.py) per scp/USB zur Offline-VM kopieren
+# .gguf nach ./models/qwen2.5-7b/ legen
 
 
 Auf der Offline-VM:
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install --no-index --find-links=wheelhouse -r requirements.txt
-# Server+Agent wie oben starten (alles lokal)
+# Server & Agent wie oben starten
 
-6) Ordnerstruktur (Referenz)
-offline-agent/
-├─ .venv/
-├─ models/
-│  └─ my-model/
-│     └─ <MODELFILE>.gguf
-├─ agent.py
-└─ (optional) wheelhouse/  # nur für Air-gap
+8) Optional: Autostart des Servers (systemd)
+sudo tee /etc/systemd/system/llamacpp.service >/dev/null <<'UNIT'
+[Unit]
+Description=Local llama.cpp server
+After=network.target
 
-7) Checks & typische Stolpersteine
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/offline-agent
+ExecStart=/home/%i/offline-agent/.venv/bin/python -m llama_cpp.server \
+  --model /home/%i/offline-agent/models/qwen2.5-7b/Qwen2.5-7B-Instruct-Q5_K_M.gguf \
+  --alias local-gguf --port 8080 --n_threads $(nproc) --n_ctx 8192
+Restart=on-failure
 
-Server nicht erreichbar? Port/Firewall prüfen, curl http://127.0.0.1:8080/v1/models.
+[Install]
+WantedBy=multi-user.target
+UNIT
 
-Langsam? Kleinere GGUF (1–3B) oder niedrigere Quantisierung (Q3_K_M) wählen, --n_threads passend setzen.
+# Dienst aktivieren (ersetze <user> durch deinen Benutzernamen):
+sudo systemctl enable llamacpp.service
+sudo systemctl start llamacpp.service
+sudo systemctl status llamacpp.service
 
-Excel-Fehler? pip install -U openpyxl pandas in der venv.
+9) Was du ggf. anpassen musst
 
-„Command not found“ in sh? Benutze absolute Pfade oder installiere fehlende Tools (z. B. ripgrep).
+Modellpfad & Dateiname:
+In Schritt 4 (Server-Start) und im systemd-Unit muss der Pfad zu deiner .gguf passen.
 
-Wenn du mir kurz sagst, wie stark deine CPU / wie viel RAM vorhanden ist, nenne ich dir 2–3 konkrete GGUF-Dateien (Größe/Qualität) plus den exakten Download-Befehl.
+Alias/Port:
+Wenn du --alias oder --port änderst, passe in agent.py die Felder model_id bzw. api_base an.
+
+Ressourcen:
+Zu wenig RAM/zu langsam → nimm Qwen2.5-7B-Instruct-Q4_K_M.gguf oder reduziere --n_ctx (z. B. 4096).
+
+Excel-Dateinamen/Sheets:
+In deinen Prompts real existierende Pfade/Sheets verwenden (z. B. ./data/sales.xlsx, Sheet-Name korrekt).
+
+10) Troubleshooting (kurz)
+
+No module named llama_cpp.server → venv aktiv? pip install "llama-cpp-python[server]" im gleichen venv.
+
+Server antwortet nicht → curl 127.0.0.1:8080/v1/models, Port/Firewall prüfen.
+
+Speicher knapp → Q4_K_M oder kleineres Modell; --n_ctx senken.
+
+Excel-Fehler → pip install -U pandas openpyxl; Pfad/Sheet checken.
+
+Agent findet Modell nicht → alias im Server ≙ model_id im Agent.
+
+Wenn du willst, gebe ich dir zusätzlich eine Miniliste an Test-Prompts für deinen Alltag (z. B. Log-Auswertung, CSV-Cleanup, MD-Report mit Ergebnissen).
