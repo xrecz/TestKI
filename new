@@ -1,0 +1,17 @@
+# Terminal 1
+cd ~/offline-agent
+source .venv/bin/activate          # venv aktivieren
+which python                       # sollte ~/offline-agent/.venv/bin/python zeigen
+python -m llama_cpp.server \
+  --model ./models/qwen2.5-7b/Qwen2.5-7B-Instruct-Q5_K_M.gguf \
+  --model_alias local-gguf \
+  --port 8080 \
+  --n_threads $(nproc) \
+  --n_ctx 8192
+
+
+# Terminal 2
+cd ~/offline-agent
+source .venv/bin/activate          # dasselbe venv aktivieren
+which python                       # wieder ~/offline-agent/.venv/bin/python
+python agent.py
